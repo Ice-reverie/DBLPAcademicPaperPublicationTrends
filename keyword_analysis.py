@@ -1,14 +1,19 @@
 import pandas as pd
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import string
 import sys
+import os
 import chardet
 import numpy as np
+import nltk
+from nltk.util import ngrams
 
-# 自定义英文停用词列表
+nltk.data.path.append(r"D:\anaconda\nltk_data")
+nltk.download('punkt', quiet=True)
+
 basic_stopwords = {
     "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your", "yours",
     "yourself", "yourselves", "he", "him", "his", "himself", "she", "her", "hers",
@@ -21,260 +26,218 @@ basic_stopwords = {
     "in", "out", "on", "off", "over", "under", "again", "further", "then", "once", "here",
     "there", "when", "where", "why", "how", "all", "any", "both", "each", "few", "more",
     "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so",
-    "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now", "also"
+    "than", "too", "very", "s", "t", "can", "will", "just", "don", "should", "now", "also",
+    "student abstract"
 }
 
-# 自定义学术停用词
 academic_stopwords = {
-    'using', 'based', 'approach', 'learning', 'via', 'network',
-    'model', 'method', 'deep', 'neural', 'via', 'new', 'task',
-    'data', 'image', 'detection', 'recognition', 'analysis',
-    'system', 'framework', 'algorithm', 'problem', 'study', 'performance',
-    'information', 'results', 'paper', 'research', 'propose', 'proposed',
-    'based', 'using', 'different', 'multiple', 'two', 'one', 'three',
-    'real', 'large', 'high', 'low', 'small', 'better', 'effective',
-    'efficient', 'novel', 'recent', 'state', 'art', 'stateoftheart',
-    'towards', 'toward', 'application', 'applications', 'time'
+    'using', 'based', 'approach', 'via', 'new', 'task',
+    'image', 'detection', 'recognition', 'analysis',
+    'system', 'framework', 'algorithm', 'problem', 'study',
+    'performance', 'information', 'results', 'paper', 'research',
+    'propose', 'proposed', 'different', 'multiple', 'two', 'one',
+    'three', 'real', 'large', 'high', 'low', 'small', 'better',
+    'effective', 'efficient', 'novel', 'recent', 'state', 'art',
+    'stateoftheart', 'towards', 'toward', 'application',
+    'applications', 'time', 'model', 'student abstract'
 }
-
-# 合并停用词集
 stop_words = basic_stopwords.union(academic_stopwords)
 
-# 文本预处理
-def preprocess_text(text):
+def preprocess_text(text, min_n=2, max_n=3):
     if not isinstance(text, str):
-        return ""
+        return []
 
+    text = re.sub(r'\s*$\s*student\s+abstract\s*$\s*', ' ', text, flags=re.IGNORECASE)
     text = text.lower()
-    text = re.sub(f'[{re.escape(string.punctuation)}]', '', text)
-    text = re.sub(r'\d+', '', text)
-    # 分词并过滤停用词
-    words = [word for word in text.split()
-             if word not in stop_words and len(word) > 2]
-    return ' '.join(words)
+    text = re.sub(f'[{re.escape(string.punctuation)}]', ' ', text)
+    text = re.sub(r'\b\d+\b', '', text)
+    text = re.sub(r'[^\w\s()]', '', text)
+    text = re.sub(r'[()]', ' ', text)  # 移除括号
+    text = re.sub(r'\s+', ' ', text).strip().lower()
 
+    words = text.split()
+    ngram_list = []
+    for n in range(min_n, max_n + 1):
+        ngram_list.extend([' '.join(gram) for gram in ngrams(words, n)])
+
+    filtered = []
+    for ngram in ngram_list:
+        ngram_words = ngram.split()
+        if len(ngram_words) >= 2 and all(w not in stop_words for w in ngram_words):
+            filtered.append(ngram)
+
+    return filtered
 
 def extract_keywords(titles, top_n=30):
-    all_words = []
+    all_ngrams = []
     for title in titles:
-        words = title.split()
-        all_words.extend(words)
+        ngrams_in_title = preprocess_text(title)
+        all_ngrams.extend(ngrams_in_title)
+    counter = Counter(all_ngrams)
+    # 过滤停用词和 "student abstract"
+    filtered_counter = Counter()
+    for ngram, count in counter.items():
+        ngram_lower = ngram.lower()
+        if ngram_lower == "student abstract":
+            continue
+        valid = True
+        for word in ngram.split():
+            if word in stop_words:
+                valid = False
+                break
+        if valid:
+            filtered_counter[ngram] = count
+    return filtered_counter.most_common(top_n)
 
-    word_counts = Counter(all_words)
-    return word_counts.most_common(top_n)
-
-
-def plot_wordcloud(keywords, year, conference=None):
+def plot_wordcloud(keywords, conference=None, year=None):
     word_dict = dict(keywords)
-
     plt.figure(figsize=(12, 8))
     wc = WordCloud(
-        width=1000,
-        height=600,
-        background_color='white',
-        colormap='viridis',
-        max_words=100
+        width=1000, height=600, background_color='white',
+        colormap='viridis', max_words=100, font_path='arial'
     ).generate_from_frequencies(word_dict)
 
-    title = f"Top Research Keywords ({year})"
+    title = "Top Research Keywords"
     if conference:
         title += f" - {conference}"
+    elif year:
+        title += f" ({year})"
+    else:
+        title += " (No Conference/Year)"
 
     plt.imshow(wc, interpolation='bilinear')
-    plt.title(title, fontsize=16)
+    plt.title(title, fontsize=16, pad=20)
     plt.axis('off')
-    plt.tight_layout()
+    plt.tight_layout(pad=1.5)
 
-    save_dir = os.path.join(os.getcwd(), "wordcloud")
+    save_dir = os.path.join(os.getcwd(), "wordclouds")
     os.makedirs(save_dir, exist_ok=True)
 
-    filename = f"wordcloud_{year}{'_' + conference if conference else ''}.png"
+    if conference:
+        filename = f"wordcloud_{conference.replace(' ', '_')}.png"
+    else:
+        filename = f"wordcloud_{year}.png"
     full_path = os.path.join(save_dir, filename)
-    plt.savefig(full_path, dpi=300)
-    plt.close()  # 关闭当前图像以释放内存
-    print(f"词云图已保存至: {full_path}")
-    plt.show()
-
+    plt.savefig(full_path, dpi=300, bbox_inches='tight')
+    plt.close()
     return filename
 
+def plot_trends(trend_data, top_n=25):
+    all_keywords = list(trend_data.keys())
+    if not all_keywords:
+        print("没有足够关键词生成趋势图")
+        return
+    keyword_counter = Counter({k: sum(v.values()) for k, v in trend_data.items()})
+    top_keywords = [kw for kw, _ in keyword_counter.most_common(top_n)]
+    if not top_keywords:
+        print("没有足够关键词生成趋势图")
+        return
+    all_years = sorted({year for cnt in trend_data.values() for year in cnt.keys()})
+    if not all_years:
+        print("没有年份数据")
+        return
 
-def plot_trends(trend_data, top_keywords=10):
     plt.figure(figsize=(14, 8))
+    plt.subplots_adjust(right=0.7)
+    lines = []
+    labels = []
 
-    years = sorted(trend_data.keys())
-    keywords = set()
-    for year_data in trend_data.values():
-        keywords.update([word for word, _ in year_data[:top_keywords]])
+    for idx, kw in enumerate(top_keywords):
+        if idx >= top_n:
+            break
+        cnt_year = trend_data[kw]
+        trends = [cnt_year.get(year, 0) for year in all_years]
+        line, = plt.plot(all_years, trends, alpha=0.7, label=kw)
+        lines.append(line)
+        labels.append(kw)
 
-    # 创建趋势矩阵（数据类型为整数）
-    trend_matrix = pd.DataFrame(index=sorted(keywords), columns=years, dtype=int).fillna(0)
-
-    for year, word_list in trend_data.items():
-        words = dict(word_list)
-        for keyword in trend_matrix.index:
-            if keyword in words:
-                trend_matrix.loc[keyword, year] = words[keyword]
-
-    top_keywords = trend_matrix.sum(axis=1).nlargest(15).index
-
-    for keyword in top_keywords:
-        plt.plot(years, trend_matrix.loc[keyword], 'o-', label=keyword, linewidth=2.5)
-
-    plt.title('Top Research Keywords Trend (2020-2025)', fontsize=16)
+    plt.title('Research Keyword Trends (2020-2025)', fontsize=16, pad=20)
     plt.xlabel('Year', fontsize=14)
     plt.ylabel('Frequency', fontsize=14)
-    plt.legend(loc='best', fontsize=10)
-    plt.grid(True, alpha=0.3)
-    plt.xticks(years, fontsize=12)
+    plt.grid(True, alpha=0.4)
+    plt.xticks(rotation=45)
     plt.tight_layout()
 
-    plt.savefig('research_trends.png', dpi=300)
-    plt.show()
+    plt.legend(
+        handles=lines,
+        labels=labels,
+        bbox_to_anchor=(1.02, 0.5),
+        loc='center left',
+        borderaxespad=0,
+        fontsize=9,
+        ncol=1,
+        framealpha=0.8,
+        title="Top 25 Keywords",
+        title_fontsize=10
+    )
+    plt.savefig('research_trends_top25.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    print("趋势图已保存: research_trends_top25.png")
 
 
 def main():
-    current_dir = os.getcwd()
-    file_path = os.path.join(current_dir, "conference_data", "all_conferences_papers.csv")
+    top_n = 15
+    min_ngram = 2
+    max_ngram = 3
 
+    print("\n正在检测文件编码...")
+    file_path = "conference_data/all_conferences_papers.csv"
     try:
         with open(file_path, 'rb') as f:
-            raw_data = f.read(10000)  # 读取前10KB用于检测编码
-            encoding_result = chardet.detect(raw_data)
-            detected_encoding = encoding_result['encoding']
-            confidence = encoding_result['confidence']
-            print(f"检测到文件编码: {detected_encoding} (置信度: {confidence:.2%})")
-
-            if confidence < 0.8:
-                print("置信度过低，尝试常用编码...")
-                try_encodings = ['utf-8', 'latin1', 'iso-8859-1', 'cp1252', 'gbk', 'gb2312', 'big5']
-            else:
-                try_encodings = [detected_encoding]
-
-        df = None
-        for encoding in try_encodings:
-            try:
-                print(f"尝试使用 {encoding} 编码读取文件...")
-                df = pd.read_csv(file_path, encoding=encoding)
-                print(f"成功使用 {encoding} 编码读取文件！")
-                break
-            except UnicodeDecodeError:
-                print(f"使用 {encoding} 编码读取失败")
-                continue
-            except Exception as e:
-                print(f"使用 {encoding} 编码读取时发生错误: {str(e)}")
-                continue
-
-        if df is None:
-            print("所有编码尝试均失败，无法读取文件")
-            sys.exit(1)
-
-        print("\n文件前几行内容:")
-        print(df.head())
-        required_columns = ['title', 'year', 'conference']
-        column_mapping = {
-            'title': ['title', '论文标题', 'paper title', '名称', '标题', '论文名称'],
-            'year': ['year', '年份', '发表年份', '年度', '出版年'],
-            'conference': ['conference', '会议', '会议名称', '会议简称', '会议类型']
-        }
-
-        # 检查并重命名列
-        actual_columns = df.columns.str.lower().tolist()
-        found_columns = {}
-
-        for std_col, possible_names in column_mapping.items():
-            for name in possible_names:
-                name_lower = name.lower()
-                if name_lower in actual_columns:
-                    original_col = df.columns[actual_columns.index(name_lower)]
-                    print(f"找到匹配列: '{original_col}' -> '{std_col}'")
-                    df.rename(columns={original_col: std_col}, inplace=True)
-                    found_columns[std_col] = True
-                    break
-
-        # 检查是否所有必要列都已找到
-        missing_columns = [col for col in required_columns if col not in found_columns]
-
-        if missing_columns:
-            print(f"\n错误: 数据文件中缺少必要的列: {', '.join(missing_columns)}")
-            print("当前数据文件包含以下列:")
-            print(df.columns.tolist())
-            print("\n请检查数据文件结构并确保包含以下列:")
-            print("- 论文标题 (title): 包含论文标题的列")
-            print("- 发表年份 (year): 包含论文发表年份的列")
-            print("- 会议名称 (conference): 包含会议名称的列")
-            sys.exit(1)
-
-        try:
-            df['year'] = pd.to_numeric(df['year'], errors='coerce').astype('Int64')
-        except:
-            print("警告: 无法将年份列转换为整数类型，尝试使用原始数据")
-
-        valid_years = df['year'].dropna().unique()
-        df = df[df['year'].isin(valid_years)]
-
-        print(f"\n成功读取数据！共 {len(df)} 篇论文记录。")
-        print("使用的列名映射:")
-        for col in required_columns:
-            print(f"{col} 列的前3个值: {df[col].head(3).tolist()}")
-
+            result = chardet.detect(f.read(10000))
+        encoding = result['encoding'] if result['confidence'] > 0.8 else 'utf-8'
+        df = pd.read_csv(file_path, encoding=encoding)
     except FileNotFoundError:
-        print(f"错误: 未找到文件 '{file_path}'")
-        print("请确保文件存在于当前目录中")
-        sys.exit(1)
-    except pd.errors.EmptyDataError:
-        print("错误: 数据文件为空")
-        sys.exit(1)
-    except pd.errors.ParserError:
-        print("错误: 数据文件解析失败，请检查CSV格式")
+        print(f"错误：文件未找到 - {file_path}")
         sys.exit(1)
     except Exception as e:
-        print(f"读取数据时发生未知错误: {str(e)}")
+        print(f"发生错误: {str(e)}")
         sys.exit(1)
 
-    print("\n预处理论文标题...")
-    df['clean_title'] = df['title'].apply(preprocess_text)
+    required_cols = {'Title', 'Year', 'Conference'}
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        print(f"错误：缺少必要列: {', '.join(missing_cols)}")
+        sys.exit(1)
 
-    yearly_keywords = {}
-    print("\n年度关键词分析:")
+    df['Year'] = pd.to_numeric(df['Year'], errors='coerce').astype('Int64')
+    df = df.dropna(subset=['Year'])
+    df = df[df['Year'].between(2020, 2025)]
 
-    # 确保年份是整数类型
-    years = sorted(df['year'].dropna().unique())
-
-    for year in years:
-        year_df = df[df['year'] == year]
-        if len(year_df) == 0:
-            continue
-
-        keywords = extract_keywords(year_df['clean_title'])
-        yearly_keywords[year] = keywords
-
-        print(f"\n{year}年前10关键词:")
-        for word, count in keywords[:10]:
-            print(f"{word}: {count}")
-
-        plot_wordcloud(keywords, year)
-
-    conference_keywords = {}
-    print("\n会议关键词分析:")
-
-    for conference in df['conference'].unique():
-        conf_df = df[df['conference'] == conference]
-        keywords = extract_keywords(conf_df['clean_title'])
+    print("\n提取关键词中...")
+    conference_keywords = defaultdict(list)
+    for conference, group in df.groupby('Conference'):
+        titles = group['Title'].tolist()
+        keywords = extract_keywords(titles, top_n=top_n)
         conference_keywords[conference] = keywords
 
-        print(f"\n{conference}前10关键词:")
-        for word, count in keywords[:10]:
-            print(f"{word}: {count}")
+    print("\n生成会议主题词云...")
+    for conference, keywords in conference_keywords.items():
+        print(f"\n{conference} 前{top_n}关键词:")
+        for i, (word, freq) in enumerate(keywords, 1):
+            print(f"{i}. {word} ({freq}次)")
 
-        plot_wordcloud(keywords, conference)
+        plot_wordcloud(keywords, conference=conference)
+        print(f"词云图已保存: {conference}_keywords.png")
+
+    print("\n生成年度词云...")
+    yearly_keywords = df.groupby('Year')['Title'].apply(extract_keywords).to_dict()
+    for year, keywords in yearly_keywords.items():
+        plot_wordcloud(keywords, year=year)
+        print(f"词云图已保存: {year}_keywords.png")
 
     print("\n生成研究趋势图...")
-    if yearly_keywords:
-        plot_trends(yearly_keywords)
-    else:
-        print("没有足够的数据生成趋势图")
+    trend_data = defaultdict(Counter)
+    for _, row in df.iterrows():
+        year = row['Year']
+        title = row['Title']
+        words = preprocess_text(title, min_n=min_ngram, max_n=max_ngram)
+        for word in words:
+            trend_data[word][year] += 1
 
-    print("分析完成！所有图表已保存为PNG文件")
+    plot_trends(trend_data, top_n=25)
+
+    print("\n分析完成！结果已保存至当前目录")
 
 
 if __name__ == "__main__":
